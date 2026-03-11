@@ -1,32 +1,50 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import threading
 from collections.abc import Awaitable
 
 from fastapi.responses import JSONResponse
+from starlette.datastructures import State
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Global variable to track scaling state
-_scaling_elastic_ep = False
+SCALING_EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/scale_data_parallel",
+        "/scale_elastic_ep",
+        "/is_scaling_data_parallel",
+        "/is_scaling_elastic_ep",
+    }
+)
 
 
-def get_scaling_elastic_ep():
-    return _scaling_elastic_ep
+def initialize_scaling_state(state: State) -> None:
+    if not hasattr(state, "is_scaling_data_parallel"):
+        state.is_scaling_data_parallel = False
+    if not hasattr(state, "scaling_data_parallel_lock"):
+        state.scaling_data_parallel_lock = threading.Lock()
+    if not hasattr(state, "scaling_data_parallel_exempt_paths"):
+        state.scaling_data_parallel_exempt_paths = SCALING_EXEMPT_PATHS
 
 
-def set_scaling_elastic_ep(value):
-    global _scaling_elastic_ep
-    _scaling_elastic_ep = value
+def is_scaling_data_parallel(state: State) -> bool:
+    initialize_scaling_state(state)
+    return bool(state.is_scaling_data_parallel)
+
+
+def set_scaling_data_parallel(state: State, value: bool) -> None:
+    initialize_scaling_state(state)
+    state.is_scaling_data_parallel = value
+
+
+def get_scaling_data_parallel_lock(state: State) -> threading.Lock:
+    initialize_scaling_state(state)
+    return state.scaling_data_parallel_lock
 
 
 class ScalingMiddleware:
-    """
-    Middleware that checks if the model is currently scaling and
-    returns a 503 Service Unavailable response if it is.
-
-    This middleware applies to all HTTP requests and prevents
-    processing when the model is in a scaling state.
-    """
+    """Return 503 for ordinary requests while DP scaling is in progress."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -35,9 +53,14 @@ class ScalingMiddleware:
         if scope["type"] != "http":
             return self.app(scope, receive, send)
 
-        # Check global scaling state
-        if get_scaling_elastic_ep():
-            # Return 503 Service Unavailable response
+        state = scope["app"].state
+        initialize_scaling_state(state)
+        path = scope.get("path", "")
+        exempt_paths = state.scaling_data_parallel_exempt_paths
+        if path in exempt_paths or path.startswith("/metrics"):
+            return self.app(scope, receive, send)
+
+        if state.is_scaling_data_parallel:
             response = JSONResponse(
                 content={
                     "error": "The model is currently scaling. Please try again later."

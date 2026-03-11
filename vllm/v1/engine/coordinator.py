@@ -18,6 +18,9 @@ from vllm.v1.utils import get_engine_client_zmq_addr, shutdown
 
 logger = init_logger(__name__)
 
+SCALE_DATA_PARALLEL_MSG = "SCALE_DATA_PARALLEL"
+LEGACY_SCALE_DATA_PARALLEL_MSG = "SCALE_ELASTIC_EP"
+
 
 class DPCoordinator:
     """Coordinator process used for data-parallel deployments (DP>1).
@@ -241,9 +244,15 @@ class DPCoordinatorProc:
                     if (
                         isinstance(decoded, (list, tuple))
                         and len(decoded) == 2
-                        and decoded[0] == "SCALE_ELASTIC_EP"
+                        and decoded[0]
+                        in (
+                            SCALE_DATA_PARALLEL_MSG,
+                            LEGACY_SCALE_DATA_PARALLEL_MSG,
+                        )
                     ):
-                        # Handle scale up notification
+                        # Update coordinator state after a front-end topology
+                        # change. The front-end already serialized the scale
+                        # operation and only sends the new total engine count.
                         new_engine_count = decoded[1]
                         current_count = len(self.engines)
                         if new_engine_count > current_count:

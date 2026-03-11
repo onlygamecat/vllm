@@ -119,9 +119,12 @@ class AsyncLLM(EngineClient):
 
         custom_stat_loggers = list(stat_loggers or [])
         custom_stat_loggers.extend(load_stat_logger_plugin_factories())
+        self._custom_stat_loggers = custom_stat_loggers
+        self._aggregate_engine_logging = aggregate_engine_logging
 
         has_custom_loggers = bool(custom_stat_loggers)
         self.log_stats = log_stats or has_custom_loggers
+        self._enable_default_stat_loggers = log_stats
         if not log_stats and has_custom_loggers:
             logger.info(
                 "AsyncLLM created with log_stats=False, "
@@ -160,10 +163,10 @@ class AsyncLLM(EngineClient):
             self.logger_manager = StatLoggerManager(
                 vllm_config=vllm_config,
                 engine_idxs=self.engine_core.engine_ranks_managed,
-                custom_stat_loggers=custom_stat_loggers,
-                enable_default_loggers=log_stats,
+                custom_stat_loggers=self._custom_stat_loggers,
+                enable_default_loggers=self._enable_default_stat_loggers,
                 client_count=client_count,
-                aggregate_engine_logging=aggregate_engine_logging,
+                aggregate_engine_logging=self._aggregate_engine_logging,
             )
             self.logger_manager.log_engine_initialized()
 
@@ -998,7 +1001,22 @@ class AsyncLLM(EngineClient):
             "waiting for requests to drain."
         )
 
-    async def scale_elastic_ep(
+    def _rebuild_stat_loggers_for_data_parallel(self) -> None:
+        if not self.log_stats:
+            return
+
+        # Recreate the stat logger manager so new DP ranks receive loggers.
+        self.logger_manager = StatLoggerManager(
+            vllm_config=self.vllm_config,
+            engine_idxs=self.engine_core.engine_ranks_managed,
+            custom_stat_loggers=self._custom_stat_loggers,
+            enable_default_loggers=self._enable_default_stat_loggers,
+            client_count=self._client_count,
+            aggregate_engine_logging=self._aggregate_engine_logging,
+        )
+        self.logger_manager.log_engine_initialized()
+
+    async def scale_data_parallel(
         self, new_data_parallel_size: int, drain_timeout: int = 300
     ):
         """
@@ -1010,14 +1028,20 @@ class AsyncLLM(EngineClient):
                 Maximum time to wait for requests to drain (seconds)
         """
         old_data_parallel_size = self.vllm_config.parallel_config.data_parallel_size
-        if old_data_parallel_size == new_data_parallel_size:
-            logger.info(
-                "Data parallel size is already %s, skipping scale",
-                new_data_parallel_size,
+        if new_data_parallel_size <= 0:
+            raise ValueError(
+                "new_data_parallel_size must be a positive integer, "
+                f"got {new_data_parallel_size}"
             )
-            return
+        if old_data_parallel_size == new_data_parallel_size:
+            raise ValueError(
+                "new_data_parallel_size must differ from current "
+                f"data parallel size {old_data_parallel_size}"
+            )
         logger.info(
-            "Waiting for requests to drain before scaling up to %s engines...",
+            "Waiting for requests to drain before scaling data parallel size "
+            "from %s to %s...",
+            old_data_parallel_size,
             new_data_parallel_size,
         )
         await self.wait_for_requests_to_drain(drain_timeout)
@@ -1025,20 +1049,16 @@ class AsyncLLM(EngineClient):
             "Requests have been drained, proceeding with scale to %s engines",
             new_data_parallel_size,
         )
-        await self.engine_core.scale_elastic_ep(new_data_parallel_size)
+        await self.engine_core.scale_data_parallel(new_data_parallel_size)
         self.vllm_config.parallel_config.data_parallel_size = new_data_parallel_size
 
-        # recreate stat loggers
-        if new_data_parallel_size > old_data_parallel_size and self.log_stats:
-            # TODO(rob): fix this after talking with Ray team.
-            # This resets all the prometheus metrics since we
-            # unregister during initialization. Need to understand
-            # the intended behavior here better.
-            self.logger_manager = StatLoggerManager(
-                vllm_config=self.vllm_config,
-                engine_idxs=list(range(new_data_parallel_size)),
-                custom_stat_loggers=None,
-            )
+        self._rebuild_stat_loggers_for_data_parallel()
+
+    async def scale_elastic_ep(
+        self, new_data_parallel_size: int, drain_timeout: int = 300
+    ):
+        """Backward-compatible alias for data parallel scaling."""
+        await self.scale_data_parallel(new_data_parallel_size, drain_timeout)
 
     @property
     def is_running(self) -> bool:

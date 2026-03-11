@@ -266,6 +266,7 @@ class CoreEngineActorManager:
         }
         runtime_env = RuntimeEnv(env_vars=self.env_vars_dict)
 
+        self.vllm_config = vllm_config
         self.addresses = addresses
         self.executor_class = executor_class
         self.log_stats = log_stats
@@ -662,9 +663,10 @@ class CoreEngineActorManager:
         dp_master_ip = cur_vllm_config.parallel_config.data_parallel_master_ip
         new_local_engines = 0
 
-        runtime_env = RuntimeEnv(
-            env_vars=self.env_vars_dict | {"VLLM_ELASTIC_EP_SCALE_UP_LAUNCH": "1"}
-        )
+        env_vars = dict(self.env_vars_dict)
+        if cur_vllm_config.model_config.is_moe:
+            env_vars["VLLM_ELASTIC_EP_SCALE_UP_LAUNCH"] = "1"
+        runtime_env = RuntimeEnv(env_vars=env_vars)
         for i, (pg, local_rank) in enumerate(zip(placement_groups, local_dp_ranks)):
             rank = cur_data_parallel_size + i
             dp_vllm_config = copy.deepcopy(cur_vllm_config)
@@ -755,11 +757,18 @@ class CoreEngineActorManager:
         for _ in range(cur_data_parallel_size - new_data_parallel_size):
             pg = self.created_placement_groups.pop()
             is_local = self.placement_group_is_local.pop()
+            actor = None
             if is_local:
-                self.local_engine_actors.pop()
+                actor = self.local_engine_actors.pop()
             else:
-                self.remote_engine_actors.pop()
+                actor = self.remote_engine_actors.pop()
+            if actor is not None:
+                ray.kill(actor)
             ray.util.remove_placement_group(pg)
+            if is_local:
+                self.vllm_config.parallel_config.data_parallel_size_local -= 1
+
+        self.vllm_config.parallel_config.data_parallel_size = new_data_parallel_size
 
     def get_run_refs(self):
         return self.run_refs

@@ -72,6 +72,25 @@ There are several notable differences when using Ray:
 - When a single DP group requires multiple nodes, *e.g.* in case a single model replica needs to run on at least two nodes, make sure to set `VLLM_RAY_DP_PACK_STRATEGY="span"` in which case `--data-parallel-size-local` is ignored and will be automatically determined
 - Remote DP ranks will be allocated based on node resources of the Ray cluster
 
+### Runtime scaling for Ray internal LB
+
+Runtime DP scale up/down is currently supported only for the single-endpoint Ray internal load-balancing topology:
+
+- `--data-parallel-backend=ray`
+- Internal LB only (not external or hybrid LB)
+- `--api-server-count=1`
+- Online serving only (not `--headless`)
+
+Use the management endpoint below to request a new target DP size after the service has drained in-flight requests:
+
+```bash
+curl -X POST http://localhost:8000/scale_data_parallel \
+  -H "Content-Type: application/json" \
+  -d '{"new_data_parallel_size": 3, "drain_timeout": 120}'
+```
+
+`POST /scale_elastic_ep` remains available as a backward-compatible alias to the same functionality.
+
 Currently, the internal DP load balancing is done within the API server process(es) and is based on the running and waiting queues in each of the engines. This could be made more sophisticated in future by incorporating KV cache aware logic.
 
 When deploying large DP sizes using this method, the API server process can become a bottleneck. In this case, the orthogonal `--api-server-count` command line option can be used to scale this out (for example `--api-server-count=4`). This is transparent to users - a single HTTP endpoint / port is still exposed. Note that this API server scale-out is "internal" and still confined to the "head" node.

@@ -39,6 +39,7 @@ from vllm.entrypoints.openai.server_utils import (
 from vllm.entrypoints.sagemaker.api_router import sagemaker_standards_bootstrap
 from vllm.entrypoints.serve.elastic_ep.middleware import (
     ScalingMiddleware,
+    initialize_scaling_state,
 )
 from vllm.entrypoints.serve.tokenize.serving import OpenAIServingTokenization
 from vllm.entrypoints.utils import (
@@ -225,6 +226,7 @@ def build_app(
         register_pooling_api_routers(app, supported_tasks)
 
     app.root_path = args.root_path
+    initialize_scaling_state(app.state)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=args.allowed_origins,
@@ -309,6 +311,7 @@ async def init_app_state(
     state.log_stats = not args.disable_log_stats
     state.vllm_config = vllm_config
     state.args = args
+    initialize_scaling_state(state)
     resolved_chat_template = load_chat_template(args.chat_template)
 
     # Merge default_mm_loras into the static lora_modules

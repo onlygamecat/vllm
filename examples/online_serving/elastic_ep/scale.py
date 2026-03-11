@@ -9,8 +9,8 @@ import sys
 import requests
 
 
-def scale(host, port, new_dp_size):
-    url = f"http://{host}:{port}/scale_elastic_ep"
+def scale(host, port, new_dp_size, endpoint_path):
+    url = f"http://{host}:{port}{endpoint_path}"
     payload = {"new_data_parallel_size": new_dp_size}
     headers = {"Content-Type": "application/json"}
 
@@ -42,10 +42,17 @@ def main():
     parser.add_argument(
         "--new-dp-size", type=int, default=2, help="New data parallel size"
     )
+    parser.add_argument(
+        "--endpoint-path",
+        default="/scale_data_parallel",
+        help="Scaling endpoint path. Use /scale_elastic_ep for the legacy alias.",
+    )
 
     args = parser.parse_args()
 
-    success = scale(args.host, args.port, args.new_dp_size)
+    success = scale(
+        args.host, args.port, args.new_dp_size, args.endpoint_path
+    )
     sys.exit(0 if success else 1)
 
 
