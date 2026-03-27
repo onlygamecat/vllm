@@ -1105,7 +1105,10 @@ class VllmBackend:
         # when dynamo calls the backend, it means the bytecode
         # transform and analysis are done
         compilation_counter.num_graphs_seen += 1
-        from .monitor import torch_compile_start_time
+        from .monitor import (
+            torch_compile_start_time,
+            torch_compile_start_time_unix_nano,
+        )
 
         dynamo_time = time.perf_counter() - torch_compile_start_time
         logger.info_once(
@@ -1114,9 +1117,21 @@ class VllmBackend:
         self.compilation_config.compilation_time += dynamo_time
 
         # Record Dynamo time in tracing if available
-        start_time = int(torch_compile_start_time * 1e9)
+        if torch_compile_start_time_unix_nano > 0:
+            start_time = torch_compile_start_time_unix_nano
+            end_time = start_time + int(dynamo_time * 1e9)
+        else:
+            # Fallback for unexpected states: still emit epoch-based timestamps.
+            end_time = time.time_ns()
+            start_time = end_time - int(dynamo_time * 1e9)
+
         attributes = {"dynamo.time_seconds": dynamo_time}
-        instrument_manual("Dynamo bytecode transform", start_time, None, attributes)
+        instrument_manual(
+            "Dynamo bytecode transform",
+            start_time,
+            end_time,
+            attributes,
+        )
 
         # we control the compilation process, each instance can only be
         # called once

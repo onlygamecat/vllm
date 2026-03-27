@@ -12,6 +12,9 @@ logger = init_logger(__name__)
 
 # Shared global so backends.py can read the start time for Dynamo timing.
 torch_compile_start_time: float = 0.0
+# Wall-clock timestamp (Unix epoch nanoseconds) captured alongside
+# `torch_compile_start_time` so tracing can use epoch-based timestamps.
+torch_compile_start_time_unix_nano: int = 0
 
 
 @contextlib.contextmanager
@@ -24,8 +27,9 @@ def monitor_torch_compile(
     On normal exit: logs the compile time and exits depyf.
     On exception: cleans up depyf without logging (compilation failed).
     """
-    global torch_compile_start_time
+    global torch_compile_start_time, torch_compile_start_time_unix_nano
     torch_compile_start_time = time.perf_counter()
+    torch_compile_start_time_unix_nano = time.time_ns()
 
     compilation_config = vllm_config.compilation_config
     depyf_cm = None
